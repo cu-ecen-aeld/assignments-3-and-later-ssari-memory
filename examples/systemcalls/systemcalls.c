@@ -74,6 +74,11 @@ bool do_exec(int count, ...)
             if (execv(command[0], command) != -1) {
                 exit(1);
             }
+            else {
+                perror("** error execv");
+                exit(1);
+                return false;
+            }
         //}
         
     } 
@@ -126,11 +131,10 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
             if (dup2(fd, 1) < 0) { return false; }
             close(fd);
             
-                if (execv(command[0], command) != -1) {
-                    exit(1);
-                }    
+            if (execv(command[0], command) != -1) {
+                exit(1);
+            }  
            
-            return false;
         default:
             close(fd);
     }
