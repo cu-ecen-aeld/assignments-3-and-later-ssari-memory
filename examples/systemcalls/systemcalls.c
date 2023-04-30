@@ -61,29 +61,27 @@ bool do_exec(int count, ...)
  *   as second argument to the execv() command.
  *
 */
-    __pid_t pid;
-    int status;
-
+    pid_t pid;
+     fflush(stdout);
     pid = fork();
 
     if (pid==-1){
         
         return false;
     } else if (pid == 0){
-        for(i=1; i<count; i++)
-        {
-            if (execv(command[0], command+i) == -1) {
-                return false;
+        //for(i=1; i<count; i++)
+        //{
+            if (execv(command[0], command) != -1) {
+                exit(1);
             }
-        }
+        //}
         
-    } else {
-        if(wait(&status)==-1){
-           
-            return false;
-        }
+    } 
+    int status = 0;
+    wait(&status);
+    if (status != 0)
+        return false;
 
-    }
 
     va_end(args);
 
@@ -118,24 +116,28 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
  *   The rest of the behaviour is same as do_exec()
  *
 */
-    int kidpid;
+    int pid;
     int fd = open(outputfile, O_WRONLY|O_TRUNC|O_CREAT, 0644);
     if (fd < 0) { perror("open"); abort(); }
-    switch (kidpid = fork()) {
+     fflush(stdout);
+    switch (pid = fork()) {
         case -1: perror("fork"); abort();
         case 0:
-            if (dup2(fd, 1) < 0) { perror("dup2"); abort(); }
+            if (dup2(fd, 1) < 0) { return false; }
             close(fd);
-            for(i=1; i<count; i++)
-            {
-                if (execv(command[0], command+i) == -1) {
-                    return false;
+            
+                if (execv(command[0], command) != -1) {
+                    exit(1);
                 }    
-            }
+           
             return false;
         default:
             close(fd);
     }
+    int status = 0;
+    wait(&status);
+    if (status != 0)
+        return false;
 
     va_end(args);
 
