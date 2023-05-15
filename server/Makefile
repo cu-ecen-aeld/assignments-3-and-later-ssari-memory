@@ -1,7 +1,7 @@
 CC := gcc
-CFLAGS := -g -Wall 
+CFLAGS := -ggdb -Wall 
 LDFLAGS := 
-EXECUTABLE := writer
+EXECUTABLE := aesdsocket
 
 ifdef CROSS_COMPILE
 	CC := $(CROSS_COMPILE)$(CC)
@@ -9,8 +9,8 @@ endif
 
 all: $(EXECUTABLE)
 
-$(EXECUTABLE): writer.c
-	$(CC) $(CFLAGS) -o $@ $^
+$(EXECUTABLE): aesdsocket.c
+	$(CC) $(CFLAGS) -o $(EXECUTABLE)
 
 clean:
 	rm -f $(EXECUTABLE)
