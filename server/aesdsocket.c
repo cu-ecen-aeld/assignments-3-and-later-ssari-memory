@@ -7,114 +7,207 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <errno.h>
+#include <netdb.h>
+#include <stdlib.h>
+#include <stdbool.h>
 #include <signal.h>
+#include <fcntl.h>
 
-#define PORT 9000
+
 #define FILENAME "/var/tmp/aesdsocketdata"
+#define PORT "9000"
 #define MAX_PACKET_SIZE 1024
 
-int sockfd;
 
-// Signal handler to gracefully exit on SIGINT or SIGTERM
-void signal_handler(int sig) {
-    syslog(LOG_INFO, "Caught signal, exiting");
-    close(sockfd);
-    remove(FILENAME);
-    exit(0);
+bool server_flag;
+int sockfd, new_fd;
+FILE *fptr;
+
+void signal_handler(int signal_number){
+    if ((signal_number == SIGINT) || (signal_number == SIGTERM)){
+        syslog(LOG_INFO, "Caught signal, exiting\n");
+        shutdown(sockfd, SHUT_RDWR);
+        server_flag = false;
+    }
 }
 
-int main(int argc, char** argv) {
-    int newsockfd, n;
-    socklen_t clilen;
+int send_file(int socket_fd, FILE* file_fd) {
+    int rc;
+    size_t size;
     char buffer[MAX_PACKET_SIZE];
-    struct sockaddr_in serv_addr, cli_addr;
-    int flag_deamon=0;
 
-    if(argc == 2){
-        flag_deamon = (!strcmp(argv[1],"-d"))? 1:0;
-    }
-
-    // Create a socket
-    sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd < 0) {
-        perror("ERROR opening socket");
+    rc = fseek(file_fd, 0, SEEK_SET);
+    if (rc == -1) {
+        syslog(LOG_ERR, "Error: %s\n", strerror(errno));
         return -1;
     }
 
-    // Bind the socket to a port
-    memset(&serv_addr, 0, sizeof(serv_addr));
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_addr.s_addr = INADDR_ANY;
-    serv_addr.sin_port = htons(PORT);
-    if (bind(sockfd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0) {
-        perror("ERROR on binding");
-        return -1;
-    }
-
-    // Listen for incoming connections
-    listen(sockfd, 5);
-    clilen = sizeof(cli_addr);
-
-    // Register the signal handler for SIGINT and SIGTERM
-    signal(SIGINT, signal_handler);
-    signal(SIGTERM, signal_handler);
-
-    // Deamon starts
-    if(flag_deamon){
-        pid_t pid = fork();
-        if (pid > 0)
-            return 0;
-        else    
+    while ((size = fread(buffer, sizeof(char), MAX_PACKET_SIZE, file_fd)) > 0) {
+        printf("send data: %.*s", (int)size, buffer);
+        ssize_t sent_bytes = send(socket_fd, buffer, size, 0);
+        if (sent_bytes == -1) {
+            syslog(LOG_ERR, "Error sending data: %s\n", strerror(errno));
             return -1;
-    }
-
-    // Loop forever, accepting new connections and handling them
-    while (1) {
-        // Accept a new connection
-        newsockfd = accept(sockfd, (struct sockaddr *) &cli_addr, &clilen);
-        if (newsockfd < 0) {
-            perror("ERROR on accept");
-            continue;
+        } else if (sent_bytes < size) {
+            syslog(LOG_ERR, "Incomplete data sent: %zd out of %zu bytes\n", sent_bytes, size);
+            return -1;
         }
-
-        // Log the accepted connection
-        char *client_ip = inet_ntoa(cli_addr.sin_addr);
-        syslog(LOG_INFO, "Accepted connection from %s", client_ip);
-
-        // Open the file to append received data
-        FILE *file = fopen(FILENAME, "a");
-        if (file == NULL) {
-            perror("ERROR opening file");
-            close(newsockfd);
-            continue;
-        }
-
-        // Receive data over the connection and append to the file
-        while ((n = recv(newsockfd, buffer, MAX_PACKET_SIZE, 0)) > 0) {
-            buffer[n] = '\0';
-            char *packet_end = strchr(buffer, '\n');
-            if (packet_end == NULL) {
-                fputs(buffer, file);
-            } else {
-                size_t packet_size = packet_end - buffer + 1;
-                fwrite(buffer, packet_size, 1, file);
-                break;
-            }
-        }
-
-        // Return the contents of the file to the client
-        fseek(file, 0, SEEK_SET);
-        while ((n = fread(buffer, 1, MAX_PACKET_SIZE, file)) > 0) {
-            send(newsockfd, buffer, n, 0);
-        }
-
-        // Close the file and the connection
-        fclose(file);
-        close(newsockfd);
-
-        // Log the closed connection
-        syslog(LOG_INFO, "Closed connection from %s", client_ip);
     }
 
     return 0;
+}
+
+
+int file_append(FILE* fd, char *buffer, int size) {
+    int rc;
+
+    rc = fseek(fd, 0, SEEK_END);
+    if (rc == -1) {
+        syslog(LOG_ERR, "Error: %s\n", strerror(errno));
+        return -1;
+    }
+
+    size_t bytes_written = fwrite(buffer, sizeof(char), size, fd);
+    if (bytes_written != size) {
+        syslog(LOG_ERR, "Error writing to file: %s\n", strerror(errno));
+        return -1;
+    }
+
+    return bytes_written;
+}
+
+
+int start_daemon(){
+
+    pid_t pid = fork();
+    if(pid > 0){
+        exit(0);
+    }
+    chdir("/");
+    return 0;
+}
+
+int main(int argc, char** argv){
+    struct addrinfo hints;
+    struct addrinfo *servinfo;
+	struct sockaddr_storage their_addr;
+    socklen_t addr_size;
+    int ret;
+	char buffer[MAX_PACKET_SIZE];
+    struct sigaction new_action;
+    memset(&new_action,0,sizeof(struct sigaction));
+
+	openlog(NULL, 0, LOG_USER);
+	syslog(LOG_INFO, "Start logging");
+    printf("Start aesd socket\n");
+
+    new_action.sa_handler=signal_handler;
+    if(sigaction(SIGTERM, &new_action, NULL) != 0){
+        syslog(LOG_ERR, "Error setting up sigaction for SIGTERM");
+        return -1;
+    }
+    if(sigaction(SIGINT, &new_action, NULL) != 0){
+        syslog(LOG_ERR, "Error setting up sigaction for SIGINT");
+        return -1;
+    }
+    server_flag = true;
+    
+    sockfd = socket(PF_INET, SOCK_STREAM, 0);
+    if(sockfd == -1){
+        syslog(LOG_ERR, "Error opening socket: %s\n", strerror(errno));
+        return -1;
+    }
+
+    memset(&hints, 0, sizeof hints);
+    hints.ai_flags = AI_PASSIVE;
+    hints.ai_family = AF_INET;
+    ret = getaddrinfo(NULL, PORT , &hints, &servinfo);
+    if (ret != 0){
+        syslog(LOG_ERR, "Error setting up getaddrinfo. Errno: %s\n", strerror(errno));
+        return -1;
+    }
+
+    ret = bind(sockfd, servinfo->ai_addr, servinfo->ai_addrlen);
+    if(ret == -1){
+        syslog(LOG_ERR, "Error binding socket: %s\n", strerror(errno));
+        return -1;
+    }
+
+
+    freeaddrinfo(servinfo);
+
+    if(argc == 2 && strcmp(argv[1], "-d") == 0){
+        start_daemon();
+    }
+
+	ret = listen(sockfd, 20);
+    if(ret == -1){
+        syslog(LOG_ERR, "Error listening to socket: %s\n", strerror(errno));
+        return -1;
+    }
+
+    while(server_flag){
+        addr_size = sizeof their_addr;
+        new_fd = accept(sockfd, (struct sockaddr *)&their_addr, &addr_size);
+        if(new_fd == -1){
+            syslog(LOG_ERR, "Error accepting socket: %s\n", strerror(errno));
+            break;
+        }
+
+        char hoststr[NI_MAXHOST];
+        char portstr[NI_MAXSERV];
+
+        ret = getnameinfo((struct sockaddr *)&their_addr, addr_size, hoststr, sizeof(hoststr), portstr, sizeof(portstr), NI_NUMERICHOST | NI_NUMERICSERV);
+        if(ret != 0){
+            return -1;
+        }
+        syslog(LOG_INFO, "Accepted connection from %s", hoststr);
+
+
+        fptr = fopen(FILENAME, "a+");
+
+        if(fptr == NULL){
+            syslog(LOG_ERR, "Error opening file var/tmp/aesdsocketdata: %s\n", strerror(errno));
+            return 1;
+        }
+
+        while(1){
+      
+            ret = recv(new_fd, &buffer, MAX_PACKET_SIZE, 0);
+            if(ret == 0){
+                syslog(LOG_INFO, "Closed connection from %s", hoststr);
+                break;
+            }
+            else if(ret < 0){
+                printf("recv error\n");
+                syslog(LOG_ERR, "Recv error: %s", strerror(errno));
+                break;
+            }
+            else if (ret > 0){
+                printf("received data\n");
+                if(strchr(buffer, '\n')){
+                    file_append(fptr, buffer, ret);
+                    printf("written data: %.*s", ret, buffer);
+                    fsync(fileno(fptr));
+
+                    send_file(new_fd, fptr);
+                }
+                else if(ret == MAX_PACKET_SIZE){
+                    file_append(fptr, buffer, ret);
+                }
+            }
+        }
+    }
+
+    if (sockfd)
+        close(sockfd);
+    if (new_fd)
+        close(new_fd);
+    if (fptr)
+        fclose(fptr);
+    remove(FILENAME);
+    printf("Server closed\n");
+
+	return 0;
 }

@@ -1,16 +1,19 @@
-CC := gcc
-CFLAGS := -ggdb -Wall 
-LDFLAGS := 
-EXECUTABLE := aesdsocket
+CC=$(CROSS_COMPILE)gcc
+CFLAGS=-g -Wall -Werror
+LDFLAGS=
 
-ifdef CROSS_COMPILE
-	CC := $(CROSS_COMPILE)$(CC)
-endif
+OBJ=aesdsocket.o
 
-all: $(EXECUTABLE)
+all: aesdsocket
 
-$(EXECUTABLE): aesdsocket.c
-	$(CC) $(CFLAGS) -o $(EXECUTABLE)
+default: aesdsocket
+
+aesdsocket: $(OBJ)
+	$(CC) $(CFLAGS) -o aesdsocket $(OBJ) $(LDFLAGS)
+
+%o: %c
+	$(CC) $(CFLAGS) -c $<
 
 clean:
-	rm -f $(EXECUTABLE)
+	rm -f aesdsocket.o
+	rm -f aesdsocket
