@@ -160,7 +160,7 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
         PDEBUG("New line found");
         entry.buffptr = dev->write_buffer;
         entry.size = dev->write_buffer_size;
-        old_buffer = aesd_circular_buffer_add_entry(&dev->buffer, &entry);
+        const char *old_buffer = aesd_circular_buffer_add_entry(&dev->buffer, &entry);
         if (old_buffer != NULL)
         {
             PDEBUG("Freeing old command");
