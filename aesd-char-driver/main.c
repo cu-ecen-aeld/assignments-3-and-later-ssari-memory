@@ -1,3 +1,7 @@
+/**
+ * @file aesdchar.c
+ * @brief Functions and data related to the AESD char driver implementation
+ *
  * Based on the implementation of the "scull" device driver, found in
  * Linux Device Drivers example code.
  *
@@ -13,7 +17,7 @@
 #include <linux/types.h>
 #include <linux/cdev.h>
 #include <linux/fs.h> // file_operations
-#include <linux/sem.h>
+#include <linux/slab.h>
 #include "aesdchar.h"
 int aesd_major = 0; // use dynamic major
 int aesd_minor = 0;
@@ -25,8 +29,8 @@ struct aesd_dev aesd_device;
 
 int aesd_open(struct inode *inode, struct file *filp)
 {
-    PDEBUG("open");
     struct aesd_dev *dev;
+    PDEBUG("open");
     dev = container_of(inode->i_cdev, struct aesd_dev, cdev);
     filp->private_data = dev;
     filp->f_pos = 0;
@@ -44,8 +48,11 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
                   loff_t *f_pos)
 {
     ssize_t retval = 0;
-    PDEBUG("read %zu bytes with offset %lld", count, *f_pos);
     struct aesd_dev *dev = filp->private_data;
+    size_t entry_offset_byte_rtn;
+    struct aesd_buffer_entry *entry;
+    size_t bytes_to_copy;
+    PDEBUG("read %zu bytes with offset %lld", count, *f_pos);
 
     // lock mutex
     if (mutex_lock_interruptible(&dev->buffer_mutex))
@@ -53,8 +60,6 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
         PDEBUG("Error locking mutex");
         return -ERESTARTSYS;
     }
-    size_t entry_offset_byte_rtn;
-    struct aesd_buffer_entry *entry;
     entry = aesd_circular_buffer_find_entry_offset_for_fpos(&dev->buffer, *f_pos, &entry_offset_byte_rtn);
     if (entry == NULL)
     {
@@ -62,7 +67,7 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
         goto out;
     }
     PDEBUG("Entry found");
-    size_t bytes_to_copy = entry->size - entry_offset_byte_rtn;
+    bytes_to_copy = entry->size - entry_offset_byte_rtn;
     if (bytes_to_copy > count)
     {
         bytes_to_copy = count;
@@ -89,8 +94,13 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
                    loff_t *f_pos)
 {
     ssize_t retval = -ENOMEM;
-    PDEBUG("write %zu bytes with offset %lld", count, *f_pos);
     struct aesd_dev *dev = filp->private_data;
+    size_t offset = 0;
+    char *new_buffer;
+    char *new_line;
+    struct aesd_buffer_entry entry;
+    const char *old_buffer;
+    PDEBUG("write %zu bytes with offset %lld", count, *f_pos);
 
     // lock mutex
     if (mutex_lock_interruptible(&dev->buffer_mutex))
@@ -107,9 +117,8 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
         goto out;
     }
 
-    size_t offset = 0;
     // allocate new buffer with size of old buffer + new data
-    char *new_buffer = kmalloc(dev->write_buffer_size + count, GFP_KERNEL);
+    new_buffer = kmalloc(dev->write_buffer_size + count, GFP_KERNEL);
     if (new_buffer == NULL)
     {
         PDEBUG("Error allocating new buffer");
@@ -144,15 +153,14 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
     retval = count;
 
     // look for new line in buffer
-    char *new_line = memchr(dev->write_buffer, '\n', dev->write_buffer_size);
+    new_line = memchr(dev->write_buffer, '\n', dev->write_buffer_size);
     // if new line character found, add command to circular buffer until new line
     if (new_line != NULL)
     {
         PDEBUG("New line found");
-        struct aesd_buffer_entry entry;
         entry.buffptr = dev->write_buffer;
         entry.size = dev->write_buffer_size;
-        char *old_buffer = aesd_circular_buffer_add_entry(&dev->buffer, &entry);
+        old_buffer = aesd_circular_buffer_add_entry(&dev->buffer, &entry);
         if (old_buffer != NULL)
         {
             PDEBUG("Freeing old command");
@@ -167,12 +175,50 @@ out:
     mutex_unlock(&dev->buffer_mutex);
     return retval;
 }
+
+
+loff_t aesd_llseek(struct file * filp, loff_t f_pos, int seek)
+{
+    loff_t retval = 0;
+    struct aesd_dev *dev = filp->private_data;
+    if(seek != SEEK_SET)
+    {
+        PDEBUG("seek other the SEEK_SET is unsupported");
+        return -ESPIPE;
+    }
+    PDEBUG("llseek with f_pos:%lld\n", f_pos);
+    PDEBUG("llseek seek is %d\n", seek);
+
+    // lock mutex
+    if(mutex_lock_interruptible(&dev->buffer_mutex))
+    {
+        PDEBUG("Error locking mutex");
+        return -ERESTARTSYS;
+    }
+
+    if(f_pos < 0)
+    {
+        PDEBUG("f_pos is less than 0");
+        retval = -EINVAL;
+        goto out;
+    }
+    
+    filp->f_pos = f_pos;
+    retval = filp->f_pos;
+
+out:
+    // unlock mutex
+    mutex_unlock(&aesd_device.buffer_mutex);
+    return retval;
+}
+
 struct file_operations aesd_fops = {
     .owner = THIS_MODULE,
     .read = aesd_read,
     .write = aesd_write,
     .open = aesd_open,
     .release = aesd_release,
+    .llseek = aesd_llseek,
 };
 
 static int aesd_setup_cdev(struct aesd_dev *dev)
@@ -208,6 +254,7 @@ int aesd_init_module(void)
     aesd_device.write_buffer_size = 0;
     aesd_circular_buffer_init(&(aesd_device.buffer));
     mutex_init(&(aesd_device.buffer_mutex));
+    PDEBUG("aesd charder inited");
 
     result = aesd_setup_cdev(&aesd_device);
 
@@ -220,7 +267,11 @@ int aesd_init_module(void)
 
 void aesd_cleanup_module(void)
 {
-    dev_t devno = MKDEV(aesd_major, aesd_minor);
+    const char *old_buffptr = NULL;
+    struct aesd_buffer_entry entry;
+    dev_t devno;
+
+    devno = MKDEV(aesd_major, aesd_minor);
 
     cdev_del(&aesd_device.cdev);
 
@@ -230,8 +281,6 @@ void aesd_cleanup_module(void)
         kfree(aesd_device.write_buffer);
     }
     // free circular buffer by adding all entries to free list
-    char *old_buffptr = NULL;
-    struct aesd_buffer_entry entry;
     entry.buffptr = NULL;
     entry.size = 0;
     mutex_destroy(&(aesd_device.buffer_mutex));
@@ -242,6 +291,8 @@ void aesd_cleanup_module(void)
             break;
         kfree(old_buffptr);
     } while (1);
+
+    PDEBUG("aesd chardev cleaned");
 
 
     unregister_chrdev_region(devno, 1);
