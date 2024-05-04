@@ -76,15 +76,17 @@ const char *aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, 
 {
     // if buffer is full, overwrite oldest entry
     // return pointer to overwritten entry
-    const char * old_buffprt = NULL;
-    if(buffer->entry[buffer->in_offs].buffptr != NULL)
+    const char *old_buffprt = NULL;
+    if (buffer->entry[buffer->in_offs].buffptr != NULL)
     {
         old_buffprt = buffer->entry[buffer->in_offs].buffptr;
+        buffer->total_size -= buffer->entry[buffer->in_offs].size;
     }
 
     buffer->entry[buffer->in_offs].buffptr = add_entry->buffptr;
     buffer->entry[buffer->in_offs].size = add_entry->size;
     buffer->in_offs++;
+    buffer->total_size += add_entry->size;
 
     if (buffer->in_offs == AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED)
     {
@@ -115,4 +117,5 @@ void aesd_circular_buffer_init(struct aesd_circular_buffer *buffer)
     buffer->full = false;
     buffer->in_offs = 0;
     buffer->out_offs = 0;
+    buffer->total_size = 0;
 }
